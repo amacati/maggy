@@ -38,7 +38,8 @@ class OptimizationConfig(LagomConfig):
         hb_interval=1,
     ):
         super().__init__(name, description, hb_interval)
-        assert num_trials > 0, "Number of trials should be greater than zero!"
+        if not num_trials > 0:
+            raise ValueError("Number of trials should be greater than zero!")
         self.num_trials = num_trials
         self.optimizer = optimizer
         self.optimization_key = optimization_key
@@ -66,11 +67,16 @@ class AblationConfig(LagomConfig):
 
 
 class DistributedConfig(LagomConfig):
+
+    BACKENDS = ["ddp", "fairscale", "deepspeed"]
+
     def __init__(
         self,
         model,
         train_set,
         test_set,
+        backend="ddp",
+        mixed_precision=False,
         name="torchDist",
         hb_interval=1,
         description="",
@@ -79,3 +85,12 @@ class DistributedConfig(LagomConfig):
         self.model = model
         self.train_set = train_set
         self.test_set = test_set
+        if backend not in self.BACKENDS:
+            raise ValueError(
+                """Backend {} not supported by Maggy.
+                 Supported types are: {}""".format(
+                    backend, self.BACKENDS
+                )
+            )
+        self.backend = backend
+        self.mixed_precision = mixed_precision

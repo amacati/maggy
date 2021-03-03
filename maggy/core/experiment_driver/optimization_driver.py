@@ -451,10 +451,13 @@ class OptimizationDriver(Driver):
 
     @staticmethod
     def _init_searchspace(searchspace):
-        assert isinstance(searchspace, Searchspace) or searchspace is None, (
-            "The experiment's search space should be an instance of maggy.Searchspace, but it is "
-            "{0} (of type '{1}').".format(str(searchspace), type(searchspace).__name__)
-        )
+        if not isinstance(searchspace, Searchspace) or searchspace is None:
+            raise ValueError(
+                """The experiment's search space should be an instance of
+                 maggy.Searchspace, but it is {} (of type '{}').""".format(
+                    str(searchspace), type(searchspace).__name__
+                )
+            )
         return searchspace if isinstance(searchspace, Searchspace) else Searchspace()
 
     @staticmethod
@@ -490,23 +493,24 @@ class OptimizationDriver(Driver):
 
     @staticmethod
     def _init_earlystop_check(es_policy):
-        assert isinstance(
-            es_policy, (str, AbstractEarlyStop)
-        ), "The experiment's early stopping policy should either be a string ('median' or 'none') \
-            or a custom policy that is an instance of maggy.earlystop.AbstractEarlyStop, but it is \
-            {0} (of type '{1}').".format(
-            str(es_policy), type(es_policy).__name__
-        )
-        if isinstance(es_policy, str):
-            assert es_policy.lower() in [
-                "median",
-                "none",
-            ], "The experiment's early stopping policy\
-                should either be a string ('median' or 'none') or a custom policy that is an \
-                instance of maggy.earlystop.AbstractEarlyStop, but it is {0} \
-                (of type '{1}').".format(
-                str(es_policy), type(es_policy).__name__
+        if not isinstance(es_policy, (str, AbstractEarlyStop)):
+            raise TypeError(
+                """The experiment's early stopping policy should either be a string
+                             ('median' or 'none') or a custom policy that is an instance of
+                             maggy.earlystop.AbstractEarlyStop, but it is {} (of type '{}').""".format(
+                    str(es_policy), type(es_policy).__name__
+                )
             )
+        if isinstance(es_policy, str):
+            if es_policy.lower() not in ["median", "none"]:
+                raise TypeError(
+                    """The experiment's early stopping policy should either be a
+                                 string ('median' or 'none') or a custom policy that is an
+                                 instance of maggy.earlystop.AbstractEarlyStop, but it is {}
+                                 (of type '{}').""".format(
+                        str(es_policy), type(es_policy).__name__
+                    )
+                )
             rule = (
                 MedianStoppingRule if es_policy.lower() == "median" else NoStoppingRule
             )

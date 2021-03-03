@@ -174,7 +174,8 @@ class Server(MessageSocket):
         Args:
             num_executors:
         """
-        assert num_executors > 0
+        if not num_executors > 0:
+            raise ValueError("Number of executors has to be greater than zero!")
         self.reservations = Reservations(num_executors)
         self.callback_list = []
         self.message_callbacks = self._register_callbacks()
@@ -529,7 +530,7 @@ class Client(MessageSocket):
                     resp = self._request(
                         self.hb_sock, "METRIC", data, reporter.get_trial_id(), logs
                     )
-                    _ = self._handle_message(resp, reporter)
+                    self._handle_message(resp, reporter)
                 time.sleep(self.hb_interval)
 
         threading.Thread(target=_heartbeat, args=(self, reporter), daemon=True).start()

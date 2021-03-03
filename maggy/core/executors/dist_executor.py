@@ -21,11 +21,14 @@ import os
 import datetime
 import random
 import socket
+from types import SimpleNamespace
 
 import torch
 import torch.distributed as dist
 
 import numpy as np
+import deepspeed
+import fairscale
 
 from maggy import util, tensorboard
 from maggy.core.rpc import Client
@@ -97,29 +100,28 @@ def dist_executor_fct(
                 "MASTER_PORT": port,
                 "WORLD_SIZE": str(master_config["num_executors"]),
                 "RANK": str(partition_id),
+                "LOCAL_RANK": str(0),  # DeepSpeed requires local rank.
                 "NCCL_BLOCKING_WAIT": "1",
-                "NCCL_DEBUG_INFO": "INFO",
+                "NCCL_DEBUG": "INFO",
             }
             reporter.log(f"Torch config is {torch_config}")
 
             _setup_torch_env(torch_config)
             _init_cluster(timeout=60, random_seed=0)
-            ddp_model = torch.nn.parallel.DistributedDataParallel(config.model.cuda())
+            model = _init_model(config)
 
             reporter.log("Starting distributed training.", True)
             sig = inspect.signature(train_fn)
             if sig.parameters.get("reporter", None):
                 retval = train_fn(
-                    model=ddp_model,
+                    model=model,
                     train_set=config.train_set,
                     test_set=config.test_set,
                     reporter=reporter,
                 )
             else:
                 retval = train_fn(
-                    model=ddp_model,
-                    train_set=config.train_set,
-                    test_set=config.test_set,
+                    model=model, train_set=config.train_set, test_set=config.test_set,
                 )
 
             retval = util.handle_return_val(retval, tb_logdir, "Metric", trial_log_file)
@@ -159,6 +161,10 @@ def _register_with_servers(client, reporter, partition_id):
 
 
 def _get_open_port():
+    """Lets the OS choose a free socket and attempts to bind it.
+    Returns:
+        port (str): The port name.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("", 0))  # Bind to 0 lets OS choose a free socket.
     port = sock.getsockname()[1]
@@ -199,7 +205,7 @@ def _setup_torch_env(torch_config):
         os.environ[env_variable] = str(torch_config[env_variable])
 
 
-def _init_cluster(timeout=60, random_seed=0):
+def _init_cluster(timeout=60, random_seed=0, backend="ddp"):
     """Checks if config is set, initializes the Torch distributed cluster and sets random seeds.
 
     Args:
@@ -207,7 +213,8 @@ def _init_cluster(timeout=60, random_seed=0):
         random_seed (:obj:'int', optional): Random seed for Torch, numpy, random. Defaults to 0.
 
     Raises:
-        AssertionError: Checks on environment variables or Torch distributed backend failed.
+        KeyError: Checks on environment variables failed.
+        RuntimeError: Checks on PyTorch distributed backend failed.
     """
     for env_variable in [
         "MASTER_ADDR",
@@ -216,15 +223,61 @@ def _init_cluster(timeout=60, random_seed=0):
         "RANK",
         "NCCL_BLOCKING_WAIT",
     ]:
-        assert (
-            env_variable in os.environ
-        ), f"Environment variable {env_variable} not registered."
-    assert torch.cuda.is_available(), "Torch distributed needs a GPU cluster."
-    assert dist.is_available(), "Torch distributed backend not accessible."
-    assert dist.is_nccl_available(), "NCCL link not available on worker."
-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=timeout))
+        if env_variable not in os.environ:
+            raise KeyError(f"Environment variable {env_variable} not registered!")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Torch distributed needs a GPU cluster.")
+    if not dist.is_available():
+        raise RuntimeError("Torch distributed backend not accessible.")
+    if not dist.is_nccl_available():
+        raise RuntimeError("NCCL link not available on worker.")
+    if backend == "deepspeed":
+        deepspeed.init_process_group(timeout=datetime.timedelta(seconds=timeout))
+    else:
+        dist.init_process_group(
+            backend="nccl", timeout=datetime.timedelta(seconds=timeout)
+        )
     torch.manual_seed(random_seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     np.random.seed(random_seed)
     random.seed(random_seed)
+
+
+def _init_model(config):
+    """Initializes the correct model according to `backend`.
+
+    If the model is too large to be pickled, it's passed as a class instead and is instantiated
+    here. The model gets further wrapped according to the backend's requirements.
+
+    Args:
+        config (DistributedConfig): Experiment config.
+
+    Returns:
+        model (torch.nn.Module): Depending on the backend, model is either a PyTorch distributed
+            module, a fairscale module or a deepspeed engine.
+    """
+    # Instantiate model on executor in case its too large for pickle and sent as a class.
+    if inspect.isclass(config.model):
+        config.model = config.model()
+    if config.backend == "ddp":
+        model = torch.nn.parallel.DistributedDataParallel(config.model.cuda())
+    elif config.backend == "fairscale":
+        model = fairscale.nn.FullyShardedDataParallel(config.model.cuda())
+    elif config.backend == "deepspeed":
+        ds_args = SimpleNamespace(local_rank=0)
+        ds_config = {
+            "train_micro_batch_size_per_gpu": 64,
+            "gradient_accumulation_steps": 1,
+            "optimizer": {"type": "Adam", "params": {"lr": 0.00015}},
+            "fp16": {"enabled": True},
+            "zero_optimization": {"stage": 2},
+        }
+        model = config.model
+        model, *_ = deepspeed.initialize(
+            args=ds_args,
+            model=model,
+            model_parameters=model.parameters(),
+            config_params=ds_config,
+        )
+    return model

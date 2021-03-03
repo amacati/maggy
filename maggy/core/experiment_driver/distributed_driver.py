@@ -14,6 +14,8 @@
 #   limitations under the License.
 #
 
+from pickle import PicklingError
+
 from maggy import util
 from maggy.core.rpc import DistributedServer
 from maggy.core.experiment_driver.driver import Driver
@@ -41,6 +43,14 @@ class DistributedDriver(Driver):
         return result
 
     def _exp_exception_callback(self, exc):
+        if isinstance(exc, PicklingError):
+            raise RuntimeError(
+                """Pickling has failed. This is most likely caused by one of the
+                 following reasons: Model too large, model can't be pickled, dataset too large.
+                 Consider passing a custom dataloader that reads from files in case of large
+                 datasets or the model class instead of an instance. It will be initialized
+                 automatically on the workers for you."""
+            ) from exc
         raise exc
 
     def _patching_fct(self, train_fn):
