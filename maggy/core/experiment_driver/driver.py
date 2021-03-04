@@ -14,10 +14,6 @@
 #   limitations under the License.
 #
 
-"""
-The experiment driver implements the functionality for scheduling trials on
-maggy.
-"""
 import time
 import os
 import queue

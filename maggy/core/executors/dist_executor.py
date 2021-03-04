@@ -51,14 +51,22 @@ def dist_executor_fct(
     """
     Wraps the user supplied training function in order to be passed to the Spark Executors.
     Args:
-        train_fn (Callable): Original training function.
-        config (DistributedConfig): Experiment config.
-        app_id (int): Maggy application ID.
-        run_id (int): Maggy run ID.
-        server_addr (str): IP of the Maggy worker registration RPC server.
-        hb_interval (Union[float, int]): Worker heartbeat interval.
-        secret (str): Secret string to authenticate messages.
-        log_dir (str): Location of the logger file directory on the file system.
+        :param train_fn: Original training function.
+        :type train_fn: callable
+        :param config: Experiment config.
+        :type config: DistributedConfig
+        :param app_id: Maggy application ID.
+        :type app_id: int
+        :param run_id: Maggy run ID.
+        :type run_id: int
+        :param server_addr: IP of the Maggy worker registration RPC server.
+        :type server_addr: str
+        :param hb_interval: Worker heartbeat interval.
+        :type hb_interval: Union[float, int]
+        :param secret: Secret string to authenticate messages.
+        :type secret: str
+        :param log_dir: Location of the logger file directory on the file system.
+        :type log_dir: str
     """
 
     def wrapper_function(_):
@@ -211,6 +219,8 @@ def _init_cluster(timeout=60, random_seed=0, backend="ddp"):
     Args:
         timeout (:obj:'int', optional): Time until initialization times out. Defaults to 60.
         random_seed (:obj:'int', optional): Random seed for Torch, numpy, random. Defaults to 0.
+        backend (str): The backend that torch uses for distributed training. Either "ddp",
+            "fairscale" or "deepspeed".
 
     Raises:
         KeyError: Checks on environment variables failed.

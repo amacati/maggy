@@ -27,7 +27,16 @@ from maggy.core.executors.trial_executor import trial_executor_fct
 
 
 class AblationDriver(OptimizationDriver):
+    """Driver class for ablation experiments.
+
+    Initializes a controller that returns a given network with a new ablated
+    feature from the searchspace on each poll. Implements the experiment driver
+    callbacks.
+    """
+
     def __init__(self, config, app_id, run_id):
+        """
+        """
         super().__init__(config, app_id, run_id)
         # set up an ablation study experiment
         self.earlystop_check = NoStoppingRule.earlystop_check

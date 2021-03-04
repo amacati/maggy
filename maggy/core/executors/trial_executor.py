@@ -40,6 +40,20 @@ def trial_executor_fct(
     optimization_key,
     log_dir,
 ):
+    """
+    Wraps the user supplied training function in order to be passed to the Spark Executors.
+    Args:
+        train_fn (Callable): Original training function.
+        config (Union[OptimizationConfig, AblationConfig): Experiment config.
+        app_id (int): Maggy application ID.
+        run_id (int): Maggy run ID.
+        server_addr (str): IP of the Maggy worker registration RPC server.
+        hb_interval (Union[float, int]): Worker heartbeat interval.
+        secret (str): Secret string to authenticate messages.
+        optimization_key (str): Key of the preformance metric that should be optimized.
+        log_dir (str): Location of the logger file directory on the file system.
+    """
+
     def _wrapper_fun(_):
         """
         Wraps the user supplied training function in order to be passed to the
