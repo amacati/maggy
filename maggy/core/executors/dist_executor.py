@@ -33,19 +33,14 @@ import fairscale
 from maggy import util, tensorboard
 from maggy.core.rpc import Client
 from maggy.core.reporter import Reporter
-from maggy.core.patching import MaggyDataLoader  # , MaggyTrainer
+from maggy.core.patching import MaggyDataLoader
 from maggy.core.environment.singleton import EnvSing
-
-# import pytorch_lightning
 
 # Patch DataLoader to always be distributed.
 torch.utils.data.DataLoader = MaggyDataLoader
 
-# Patch pytorch_lightning.Trainer to run with distributed config.
-# pytorch_lightning.Trainer = MaggyTrainer
 
-
-def dist_executor_fct(
+def dist_executor_fn(
     train_fn, config, app_id, run_id, server_addr, hb_interval, secret, log_dir,
 ):
     """
@@ -215,13 +210,15 @@ def _setup_torch_env(torch_config):
 
 def _init_cluster(timeout=60, random_seed=0, backend="ddp"):
     """Checks if config is set, initializes the Torch distributed cluster and sets random seeds.
-
     Args:
         timeout (:obj:'int', optional): Time until initialization times out. Defaults to 60.
         random_seed (:obj:'int', optional): Random seed for Torch, numpy, random. Defaults to 0.
+<<<<<<< HEAD
         backend (str): The backend that torch uses for distributed training. Either "ddp",
             "fairscale" or "deepspeed".
 
+=======
+>>>>>>> exp-driver-refactor
     Raises:
         KeyError: Checks on environment variables failed.
         RuntimeError: Checks on PyTorch distributed backend failed.
