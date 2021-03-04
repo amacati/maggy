@@ -22,15 +22,19 @@ import datetime
 import random
 import socket
 from types import SimpleNamespace
+from typing import Callable, Union, Any, Tuple
 
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as TorchDistributedDataParallel
 
 import numpy as np
 import deepspeed
-import fairscale
+from deepspeed.runtime.engine import DeepSpeedEngine
+from fairscale.nn import FullyShardedDataParallel as FairscaleFullyShardedDataParallel
 
 from maggy import util, tensorboard
+from maggy.experiment_config import DistributedConfig
 from maggy.core.rpc import Client
 from maggy.core.reporter import Reporter
 from maggy.core.patching import MaggyDataLoader
@@ -41,35 +45,34 @@ torch.utils.data.DataLoader = MaggyDataLoader
 
 
 def dist_executor_fn(
-    train_fn, config, app_id, run_id, server_addr, hb_interval, secret, log_dir,
-):
-    """
-    Wraps the user supplied training function in order to be passed to the Spark Executors.
-    Args:
-        :param train_fn: Original training function.
-        :type train_fn: callable
-        :param config: Experiment config.
-        :type config: DistributedConfig
-        :param app_id: Maggy application ID.
-        :type app_id: int
-        :param run_id: Maggy run ID.
-        :type run_id: int
-        :param server_addr: IP of the Maggy worker registration RPC server.
-        :type server_addr: str
-        :param hb_interval: Worker heartbeat interval.
-        :type hb_interval: Union[float, int]
-        :param secret: Secret string to authenticate messages.
-        :type secret: str
-        :param log_dir: Location of the logger file directory on the file system.
-        :type log_dir: str
+    train_fn: Callable,
+    config: DistributedConfig,
+    app_id: int,
+    run_id: int,
+    server_addr: str,
+    hb_interval: int,
+    secret: str,
+    log_dir: str,
+) -> Callable:
+    """Wraps the user supplied training function in order to be passed to the Spark Executors.
+
+    :param train_fn: Original training function.
+    :param config: Experiment config.
+    :param app_id: Maggy application ID.
+    :param run_id: Maggy run ID.
+    :param server_addr: IP of the Maggy worker registration RPC server.
+    :param hb_interval: Worker heartbeat interval.
+    :param secret: Secret string to authenticate messages.
+    :param log_dir: Location of the logger file directory on the file system.
+
+    :returns: Patched function to execute on the Spark executors.
     """
 
-    def wrapper_function(_):
-        """
-        Patched function from prepare_function factory.
-        Args:
-            _ (object): Necessary sink for the iterator given by Spark to the function upon foreach
-                calls. Can safely be disregarded.
+    def wrapper_function(_: Any) -> None:
+        """Patched function from dist_executor_fn factory.
+
+        :param _: Necessary catch for the iterator given by Spark to the
+        function upon foreach calls. Can safely be disregarded.
         """
         EnvSing.get_instance().set_ml_id(app_id, run_id)
         partition_id, _ = util.get_partition_attempt_id()
@@ -143,12 +146,14 @@ def dist_executor_fn(
     return wrapper_function
 
 
-def _register_with_servers(client, reporter, partition_id):
+def _register_with_servers(
+    client: Client, reporter: Reporter, partition_id: int
+) -> None:
     """Registers own address with server and starts heartbeat protocol.
-    Args:
-        client (Client): Client for communication with the server.
-        reporter (Reporter): Reporter responsible for heartbeat.
-        partition_id (int): Executors partition ID from Sparks RDD.
+
+    :param client: Client for communication with the server.
+    :param reporter: Reporter responsible for heartbeat.
+    :param partition_id: Executors partition ID from Sparks RDD.
     """
     client_addr = client.client_addr
     port = _get_open_port()
@@ -163,10 +168,10 @@ def _register_with_servers(client, reporter, partition_id):
     client.start_heartbeat(reporter)
 
 
-def _get_open_port():
+def _get_open_port() -> str:
     """Lets the OS choose a free socket and attempts to bind it.
-    Returns:
-        port (str): The port name.
+
+    :returns: The port name.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("", 0))  # Bind to 0 lets OS choose a free socket.
@@ -175,15 +180,14 @@ def _get_open_port():
     return port
 
 
-def _setup_logging(reporter, log_dir):
+def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple(str, str):
     """Sets up logging directories and files, registers with tensorboard.
-    Args:
-        reporter (Reporter): Reporter responsible for logging.
-        log_dir (str): Log directory path on the file system.
-    Returns:
-        (tuple): Tuple containing:
-            tb_logdir (str): Path of the tensorboard directory.
-            trial_log_file (str): Path of the trial log file.
+
+    :param reporter: Reporter responsible for logging.
+    :param log_dir: Log directory path on the file system.
+
+    :returns: Tuple containing the path of the tensorboard directory
+        and the trial log file.
     """
     reporter.set_trial_id(0)
     tb_logdir = log_dir + "/" + "training_logs_" + str(reporter.partition_id)
@@ -199,29 +203,27 @@ def _setup_logging(reporter, log_dir):
     return tb_logdir, trial_log_file
 
 
-def _setup_torch_env(torch_config):
+def _setup_torch_env(torch_config: dict) -> None:
     """Registers the Torch config as environment variables on the worker.
-    Args:
-        torch_config (dict): Dictionary containing the values of the variables.
+
+    :param torch_config: Dictionary containing the values of the variables.
     """
     for env_variable in torch_config.keys():
         os.environ[env_variable] = str(torch_config[env_variable])
 
 
-def _init_cluster(timeout=60, random_seed=0, backend="ddp"):
+def _init_cluster(
+    timeout: int = 60, random_seed: int = 0, backend: int = "ddp"
+) -> None:
     """Checks if config is set, initializes the Torch distributed cluster and sets random seeds.
-    Args:
-        timeout (:obj:'int', optional): Time until initialization times out. Defaults to 60.
-        random_seed (:obj:'int', optional): Random seed for Torch, numpy, random. Defaults to 0.
-<<<<<<< HEAD
-        backend (str): The backend that torch uses for distributed training. Either "ddp",
-            "fairscale" or "deepspeed".
 
-=======
->>>>>>> exp-driver-refactor
-    Raises:
-        KeyError: Checks on environment variables failed.
-        RuntimeError: Checks on PyTorch distributed backend failed.
+    :param timeout: Time until initialization times out (default: ``60``).
+    :param random_seed: Random seed for Torch, numpy, random (default: ``0``).
+    :param backend: The backend that torch uses for distributed training. Either "ddp",
+        "fairscale" or "deepspeed" (default: ``ddp``).
+
+    :raises KeyError: Checks on environment variables failed.
+    :raises RuntimeError: Checks on PyTorch distributed backend failed.
     """
     for env_variable in [
         "MASTER_ADDR",
@@ -251,26 +253,28 @@ def _init_cluster(timeout=60, random_seed=0, backend="ddp"):
     random.seed(random_seed)
 
 
-def _init_model(config):
+def _init_model(
+    config: DistributedConfig,
+) -> Union[
+    TorchDistributedDataParallel, FairscaleFullyShardedDataParallel, DeepSpeedEngine
+]:
     """Initializes the correct model according to `backend`.
 
     If the model is too large to be pickled, it's passed as a class instead and is instantiated
     here. The model gets further wrapped according to the backend's requirements.
 
-    Args:
-        config (DistributedConfig): Experiment config.
+    :param config: Experiment config.
 
-    Returns:
-        model (torch.nn.Module): Depending on the backend, model is either a PyTorch distributed
-            module, a fairscale module or a deepspeed engine.
+    :returns: Depending on the backend, returns a model that is either a PyTorch distributed
+        module, a fairscale fully sharded module or a deepspeed engine.
     """
     # Instantiate model on executor in case its too large for pickle and sent as a class.
     if inspect.isclass(config.model):
         config.model = config.model()
     if config.backend == "ddp":
-        model = torch.nn.parallel.DistributedDataParallel(config.model.cuda())
+        model = TorchDistributedDataParallel(config.model.cuda())
     elif config.backend == "fairscale":
-        model = fairscale.nn.FullyShardedDataParallel(config.model.cuda())
+        model = FairscaleFullyShardedDataParallel(config.model.cuda())
     elif config.backend == "deepspeed":
         ds_args = SimpleNamespace(local_rank=0)
         ds_config = {

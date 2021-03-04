@@ -14,10 +14,13 @@
 #   limitations under the License.
 #
 
+from __future__ import annotations
+
 import os
+from typing import Type, Union, Optional, Any
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from petastorm.reader import make_reader, make_batch_reader
 from petastorm.pytorch import DataLoader as PetastormDataLoader
 
@@ -25,26 +28,53 @@ from maggy.core.environment.singleton import EnvSing
 
 
 class MaggyDataLoader(DataLoader, PetastormDataLoader):
+    """Monkey patching class for PyTorch's DataLoader.
+
+    Patches the DataLoader to include a distributed sampler. In case a path
+    is provided instead of a Dataset, assumes a Parquet dataset in that folder
+    and initializes a Petastorm DataLoader instead (which in turn builds on
+    PyTorch's DataLoader). Uses environment variables for infos such as world
+    size for both DataLoader and PetastormDataLoader. These can assumed to be
+    present since Maggy's distributed experiment sets them prior to running the
+    training.
+    Automatically moves training data to the GPU since distributed training
+    requires execution on GPUs.
+    """
 
     loaders = {"pytorch": DataLoader, "petastorm": PetastormDataLoader}
 
     def __init__(
         self,
-        dataset,
-        batch_size=1,
-        shuffle=False,
-        sampler=None,
-        batch_sampler=None,
-        num_workers=0,
-        collate_fn=None,
-        pin_memory=False,
-        drop_last=False,
-        timeout=0,
-        worker_init_fn=None,
-        multiprocessing_context=None,
-        generator=None,
-        **_,
+        dataset: Union[Type[Dataset], str],
+        batch_size: int = 1,
+        shuffle: Any = False,
+        sampler: Optional[Sampler[int]] = None,
+        batch_sampler: Optional[Any] = None,
+        num_workers: int = 0,
+        collate_fn: Optional["_collate_fn_t"] = None,
+        pin_memory: bool = False,
+        drop_last: bool = False,
+        timeout: float = 0,
+        worker_init_fn: Optional["_worker_init_fn_t"] = None,
+        **_: Any,
     ):
+        """Initializes either a torch DataLoader or a Petastorm DataLoader.
+
+        Decides which one to choose based on dataset's type.
+
+        :param dataset: Either a PyTorch Dataset or a path to a Parquet dataset.
+        :param batch_size: How many samples per batch to load (default: ``1``).
+        :param shuffle: Discarded, not compatible with Maggy.
+        :param sampler: Discarded, gets replaced by DistributedSampler.
+        :param batch_sampler: Discarded, not compatible with Maggy.
+        :param num_workers: Number of subprocesses for data loading.
+        :param collate_fn: Merges a list of samples to a minibatch of tensors.
+        :param pin_memory: Automatically transfer tensors to GPU.
+        :param drop_last: Drop last incomplete batch.
+        :param timeout: Timeout for collecting a batch.
+        :param worker_init_fn: Executed on each worker with worker ID.
+        :param _: Argument catch to stay compatible with PyTorch.
+        """
         # Distinguish between Torch dataloader and Petastorm dataloader
         # Super init avoided to make sure MaggyDataLoader inherits correctly based on dataset type.
         if isinstance(dataset, Dataset):
@@ -53,17 +83,15 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
                 self,
                 dataset,
                 batch_size,
-                shuffle,
-                sampler,
-                batch_sampler,
-                num_workers,
-                collate_fn,
-                pin_memory,
-                drop_last,
-                timeout,
-                worker_init_fn,
-                multiprocessing_context,
-                generator,
+                shuffle=False,
+                sampler=sampler,
+                batch_sampler=None,
+                num_workers=num_workers,
+                collate_fn=collate_fn,
+                pin_memory=pin_memory,
+                drop_last=drop_last,
+                timeout=timeout,
+                worker_init_fn=worker_init_fn,
             )
             self.mode = "pytorch"
         else:
@@ -81,18 +109,25 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
             self.mode = "petastorm"
         self.iterator = None
 
-    def __iter__(self):
+    def __iter__(self) -> MaggyDataLoader:
         # Reload the dataset when new iterator requested.
         self.iterator = self.loaders[self.mode].__iter__(self)
         return self
 
-    def __next__(self):
+    def __next__(self) -> Union[torch.Tensor, list, dict]:
         data = self.iterator.__next__()
         return _to_cuda(data)
 
 
-def _to_cuda(data):
-    """Recurses into data, transfers tensors to GPU."""
+def _to_cuda(data: Union[torch.Tensor, list, dict]) -> Union[torch.Tensor, list, dict]:
+    """Recurses into data, transfers tensors to GPU.
+
+    :param data: The data structure to be transferred.
+
+    :raises TypeError: In case of unsupported data structures.
+
+    :returns: The transfered data structure.
+    """
     if isinstance(data, dict):
         for key in data.keys():
             data[key] = _to_cuda(data[key])
@@ -104,4 +139,4 @@ def _to_cuda(data):
         return data
     if isinstance(data, torch.Tensor):
         return data.cuda()
-    raise ValueError(f"Type {type(data)} currently not supported!")
+    raise TypeError(f"Type {type(data)} currently not supported!")

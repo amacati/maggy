@@ -26,6 +26,7 @@ provided information.
 import atexit
 import time
 from functools import singledispatch
+from typing import Callable, Type
 
 from maggy import util
 from maggy.core.environment.singleton import EnvSing
@@ -33,6 +34,7 @@ from maggy.core.experiment_driver.ablation_driver import AblationDriver
 from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
 from maggy.core.experiment_driver.distributed_driver import DistributedDriver
 from maggy.experiment_config import (
+    LagomConfig,
     OptimizationConfig,
     AblationConfig,
     DistributedConfig,
@@ -45,7 +47,7 @@ RUN_ID = 1
 EXPERIMENT_JSON = {}
 
 
-def lagom(train_fn, config):
+def lagom(train_fn: Callable, config: Type[LagomConfig]) -> dict:
     """Launches a maggy experiment, which depending on 'config' can either
     be a hyperparameter optimization, an ablation study experiment or distributed
     training. Given a search space, objective and a model training procedure `train_fn`
@@ -56,9 +58,9 @@ def lagom(train_fn, config):
     **lagom** is a Swedish word meaning "just the right amount".
 
     :param train_fn: User defined experiment containing the model training.
-    :type train_fn: callable
     :param config: An experiment configuration. For more information, see experiment_config.
-    :type config: OptimizationConfig | AblationConfig | DistributedConfig
+
+    :returns: The experiment results as a dict.
     """
     global APP_ID
     global RUNNING
@@ -84,7 +86,14 @@ def lagom(train_fn, config):
 
 
 @singledispatch
-def lagom_driver(config, app_id, run_id):
+def lagom_driver(config, app_id: int, run_id: int) -> None:
+    """Dispatcher function for the experiment driver.
+
+    Initializes the appropriate driver according to the config.
+
+    :raises TypeError: Only gets called if no fitting config was found and
+        raises an error.
+    """
     raise TypeError(
         "Invalid config type! Config is expected to be of type {}, {} or {}, \
                      but is of type {}".format(
@@ -94,25 +103,24 @@ def lagom_driver(config, app_id, run_id):
 
 
 @lagom_driver.register(OptimizationConfig)
-def _(config, app_id, run_id):
+def _(config: OptimizationConfig, app_id: int, run_id: int) -> OptimizationDriver:
     return OptimizationDriver(config, app_id, run_id)
 
 
 @lagom_driver.register(AblationConfig)
-def _(config, app_id, run_id):
+def _(config: AblationConfig, app_id: int, run_id: int) -> AblationDriver:
     return AblationDriver(config, app_id, run_id)
 
 
 @lagom_driver.register(DistributedConfig)
-def _(config, app_id, run_id):
+def _(config: DistributedConfig, app_id: int, run_id: int) -> DistributedDriver:
     return DistributedDriver(config, app_id, run_id)
 
 
-def _exception_handler(duration):
-    """
-    Handles exceptions during execution of an experiment
-    :param duration: duration of the experiment until exception in milliseconds
-    :type duration: int
+def _exception_handler(duration: int) -> None:
+    """Handles exceptions during execution of an experiment.
+
+    :param duration: Duration of the experiment until exception in milliseconds
     """
     try:
         global RUNNING
@@ -128,10 +136,8 @@ def _exception_handler(duration):
         util.log(err)
 
 
-def _exit_handler():
-    """
-    Handles jobs killed by the user.
-    """
+def _exit_handler() -> None:
+    """Handles jobs killed by the user."""
     try:
         global RUNNING
         global EXPERIMENT_JSON
