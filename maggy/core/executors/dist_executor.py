@@ -108,7 +108,6 @@ def dist_executor_fn(
                 "RANK": str(partition_id),
                 "LOCAL_RANK": str(0),  # DeepSpeed requires local rank.
                 "NCCL_BLOCKING_WAIT": "1",
-                "NCCL_DEBUG": "INFO",
             }
             reporter.log(f"Torch config is {torch_config}")
 
@@ -180,7 +179,7 @@ def _get_open_port() -> str:
     return port
 
 
-def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple(str, str):
+def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple[str, str]:
     """Sets up logging directories and files, registers with tensorboard.
 
     :param reporter: Reporter responsible for logging.

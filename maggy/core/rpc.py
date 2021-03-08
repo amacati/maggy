@@ -14,19 +14,25 @@
 #   limitations under the License.
 #
 
+from __future__ import annotations
+
 import secrets
 import select
 import socket
 import struct
 import threading
 import time
+import typing
 from typing import Type, Any
 
 from pyspark import cloudpickle
 
-from maggy.core.experiment_driver.driver import Driver
 from maggy.core.environment.singleton import EnvSing
 from maggy.trial import Trial
+
+if typing.TYPE_CHECKING:  # Avoid circular import error.
+    from maggy.core.experiment_driver.driver import Driver
+
 
 MAX_RETRIES = 3
 BUFSIZE = 1024 * 2

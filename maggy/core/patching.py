@@ -20,14 +20,16 @@ import os
 from typing import Type, Union, Optional, Any
 
 import torch
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import Dataset, Sampler
+from torch.utils.data import DataLoader as TorchDataLoader
 from petastorm.reader import make_reader, make_batch_reader
 from petastorm.pytorch import DataLoader as PetastormDataLoader
+from petastorm.transform import TransformSpec
 
 from maggy.core.environment.singleton import EnvSing
 
 
-class MaggyDataLoader(DataLoader, PetastormDataLoader):
+class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
     """Monkey patching class for PyTorch's DataLoader.
 
     Patches the DataLoader to include a distributed sampler. In case a path
@@ -41,7 +43,7 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
     requires execution on GPUs.
     """
 
-    loaders = {"pytorch": DataLoader, "petastorm": PetastormDataLoader}
+    loaders = {"pytorch": TorchDataLoader, "petastorm": PetastormDataLoader}
 
     def __init__(
         self,
@@ -51,7 +53,7 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
         sampler: Optional[Sampler[int]] = None,
         batch_sampler: Optional[Any] = None,
         num_workers: int = 0,
-        collate_fn: Optional["_collate_fn_t"] = None,
+        collate_fn: Optional[Union["_collate_fn_t", "_petastorm_transform"]] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
         timeout: float = 0,
@@ -79,7 +81,7 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
         # Super init avoided to make sure MaggyDataLoader inherits correctly based on dataset type.
         if isinstance(dataset, Dataset):
             sampler = torch.utils.data.distributed.DistributedSampler(dataset=dataset)
-            DataLoader.__init__(
+            TorchDataLoader.__init__(
                 self,
                 dataset,
                 batch_size,
@@ -104,7 +106,12 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
             ds_type = "Petastorm" if is_peta_ds else "Parquet"
             print(f"{ds_type} dataset detected in folder {dataset}")
             reader_factory = make_reader if is_peta_ds else make_batch_reader
-            reader = reader_factory(dataset, cur_shard=rank, shard_count=num_workers)
+            reader = reader_factory(
+                dataset,
+                cur_shard=rank,
+                shard_count=num_workers,
+                transform_spec=TransformSpec(collate_fn),
+            )
             PetastormDataLoader.__init__(self, reader, batch_size=batch_size)
             self.mode = "petastorm"
         self.iterator = None
@@ -117,6 +124,11 @@ class MaggyDataLoader(DataLoader, PetastormDataLoader):
     def __next__(self) -> Union[torch.Tensor, list, dict]:
         data = self.iterator.__next__()
         return _to_cuda(data)
+
+    def __len__(self):
+        if self.mode == "petastorm":
+            raise TypeError("Petastorm dataloader does not support __len__.")
+        return super().__len__()
 
 
 def _to_cuda(data: Union[torch.Tensor, list, dict]) -> Union[torch.Tensor, list, dict]:

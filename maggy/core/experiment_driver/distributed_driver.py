@@ -54,7 +54,7 @@ class DistributedDriver(Driver):
         :returns: The result in a dictionary.
         """
         result = {"test result": self.average_metric()}
-        print("Final average test loss: {:.3f}".format(result))
+        print("Final average test loss: {:.3f}".format(self.average_metric()))
         print(
             "Finished experiment. Total run time: "
             + util.time_diff(self.job_start, job_end)

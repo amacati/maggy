@@ -30,9 +30,6 @@ from typing import Callable, Type
 
 from maggy import util
 from maggy.core.environment.singleton import EnvSing
-from maggy.core.experiment_driver.ablation_driver import AblationDriver
-from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
-from maggy.core.experiment_driver.distributed_driver import DistributedDriver
 from maggy.experiment_config import (
     LagomConfig,
     OptimizationConfig,
@@ -103,17 +100,32 @@ def lagom_driver(config, app_id: int, run_id: int) -> None:
 
 
 @lagom_driver.register(OptimizationConfig)
-def _(config: OptimizationConfig, app_id: int, run_id: int) -> OptimizationDriver:
+# Lazy import of OptimizationDriver to avoid TF import until necessary
+def _(
+    config: OptimizationConfig, app_id: int, run_id: int
+) -> "OptimizationDriver":  # noqa: F821
+    from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
+
     return OptimizationDriver(config, app_id, run_id)
 
 
 @lagom_driver.register(AblationConfig)
-def _(config: AblationConfig, app_id: int, run_id: int) -> AblationDriver:
+# Lazy import of AblationDriver to avoid TF import until necessary
+def _(
+    config: AblationConfig, app_id: int, run_id: int
+) -> "AblationDriver":  # noqa: F821
+    from maggy.core.experiment_driver.ablation_driver import AblationDriver
+
     return AblationDriver(config, app_id, run_id)
 
 
 @lagom_driver.register(DistributedConfig)
-def _(config: DistributedConfig, app_id: int, run_id: int) -> DistributedDriver:
+# Lazy import of DistributedDriver to avoid PyTorch import until necessary
+def _(
+    config: DistributedConfig, app_id: int, run_id: int
+) -> "DistributedDriver":  # noqa: F821
+    from maggy.core.experiment_driver.distributed_driver import DistributedDriver
+
     return DistributedDriver(config, app_id, run_id)
 
 

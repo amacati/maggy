@@ -222,7 +222,7 @@ class Driver(ABC):
         """
         self._message_q.put(msg)
 
-    def get_logs(self) -> Tuple(dict, str):
+    def get_logs(self) -> Tuple[dict, str]:
         """Returns the current experiment status and executor logs to send them
         to spark magic.
 

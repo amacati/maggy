@@ -113,6 +113,9 @@ class OptimizationDriver(Driver):
     def _exp_startup_callback(self) -> None:
         """Registers the hp config to tensorboard upon experiment startup.
         """
+        tensorboard._register(
+            EnvSing.get_instance().get_logdir(self.app_id, self.run_id)
+        )
         tensorboard._write_hparams_config(
             EnvSing.get_instance().get_logdir(self.app_id, self.run_id),
             self.config.searchspace,
