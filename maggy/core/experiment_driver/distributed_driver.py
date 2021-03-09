@@ -20,8 +20,8 @@ from typing import Callable, Type, Any
 from maggy import util
 from maggy.experiment_config import DistributedConfig
 from maggy.core.rpc import DistributedServer
-from maggy.core.experiment_driver.driver import Driver
-from maggy.core.executors.dist_executor import dist_executor_fn
+from maggy.core.experiment_driver import Driver
+from maggy.core.executors import dist_executor_fn
 
 
 class DistributedDriver(Driver):

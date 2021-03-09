@@ -25,8 +25,8 @@ from maggy.ablation.ablator.loco import LOCO
 from maggy.ablation.ablator import AbstractAblator
 from maggy.trial import Trial
 from maggy.core.rpc import OptimizationServer
-from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
-from maggy.core.executors.trial_executor import trial_executor_fn
+from maggy.core.experiment_driver import OptimizationDriver
+from maggy.core.executors import trial_executor_fn
 
 
 class AblationDriver(OptimizationDriver):
@@ -140,9 +140,7 @@ class AblationDriver(OptimizationDriver):
             self.log_dir,
         )
 
-    # "N/A" type because abstractablator defines it, but makes no use of it.
-    # TODO: Remove trial from get_trial()?
-    def controller_get_next(self, trial: Optional["N/A"] = None) -> Union[Trial, None]:
+    def controller_get_next(self, trial: Optional[Trial] = None) -> Union[Trial, None]:
         """Gets a `Trial` to be assigned to an executor, or `None` if there are
         no trials remaining in the experiment.
 
