@@ -21,44 +21,58 @@ import os
 import datetime
 import random
 import socket
+from typing import Callable, Union, Any, Tuple, Type
 
 import torch
 import torch.distributed as dist
 
 import numpy as np
+import deepspeed
 
-from maggy import util, tensorboard
+from maggy import util
+from maggy.experiment_config import DistributedConfig
 from maggy.core.rpc import Client
 from maggy.core.reporter import Reporter
-from maggy.core.patching import MaggyDataLoader
+from maggy.core.patching import (
+    MaggyDataLoader,
+    MaggyZeroAdam,
+    MaggyZeroSGD,
+    MaggyDDPModuleWrapper,
+    MaggyFairScaleModuleWrapper,
+    MaggyDeepSpeedModuleWrapper,
+)
 from maggy.core.environment.singleton import EnvSing
-
-# Patch DataLoader to always be distributed.
-torch.utils.data.DataLoader = MaggyDataLoader
 
 
 def dist_executor_fn(
-    train_fn, config, app_id, run_id, server_addr, hb_interval, secret, log_dir,
-):
-    """
-    Wraps the user supplied training function in order to be passed to the Spark Executors.
-    Args:
-        train_fn (Callable): Original training function.
-        config (DistributedConfig): Experiment config.
-        app_id (int): Maggy application ID.
-        run_id (int): Maggy run ID.
-        server_addr (str): IP of the Maggy worker registration RPC server.
-        hb_interval (Union[float, int]): Worker heartbeat interval.
-        secret (str): Secret string to authenticate messages.
-        log_dir (str): Location of the logger file directory on the file system.
+    train_fn: Callable,
+    config: DistributedConfig,
+    app_id: int,
+    run_id: int,
+    server_addr: str,
+    hb_interval: int,
+    secret: str,
+    log_dir: str,
+) -> Callable:
+    """Wraps the user supplied training function in order to be passed to the Spark Executors.
+
+    :param train_fn: Original training function.
+    :param config: Experiment config.
+    :param app_id: Maggy application ID.
+    :param run_id: Maggy run ID.
+    :param server_addr: IP of the Maggy worker registration RPC server.
+    :param hb_interval: Worker heartbeat interval.
+    :param secret: Secret string to authenticate messages.
+    :param log_dir: Location of the logger file directory on the file system.
+
+    :returns: Patched function to execute on the Spark executors.
     """
 
-    def wrapper_function(_):
-        """
-        Patched function from prepare_function factory.
-        Args:
-            _ (object): Necessary sink for the iterator given by Spark to the function upon foreach
-                calls. Can safely be disregarded.
+    def wrapper_function(_: Any) -> None:
+        """Patched function from dist_executor_fn factory.
+
+        :param _: Necessary catch for the iterator given by Spark to the
+        function upon foreach calls. Can safely be disregarded.
         """
         EnvSing.get_instance().set_ml_id(app_id, run_id)
         partition_id, _ = util.get_partition_attempt_id()
@@ -92,27 +106,30 @@ def dist_executor_fn(
                 "MASTER_PORT": port,
                 "WORLD_SIZE": str(master_config["num_executors"]),
                 "RANK": str(partition_id),
+                "LOCAL_RANK": str(0),  # DeepSpeed requires local rank.
                 "NCCL_BLOCKING_WAIT": "1",
-                "NCCL_DEBUG_INFO": "INFO",
             }
             reporter.log(f"Torch config is {torch_config}")
 
             _setup_torch_env(torch_config)
             _init_cluster(timeout=60, random_seed=0)
-            ddp_model = torch.nn.parallel.DistributedDataParallel(config.model.cuda())
+            module = _wrap_module(config)
+            _monkey_patch_pytorch(config.zero_lvl)
 
             reporter.log("Starting distributed training.", True)
             sig = inspect.signature(train_fn)
             if sig.parameters.get("reporter", None):
                 retval = train_fn(
-                    model=ddp_model,
+                    module=module,
+                    hparams=config.hparams,
                     train_set=config.train_set,
                     test_set=config.test_set,
                     reporter=reporter,
                 )
             else:
                 retval = train_fn(
-                    model=ddp_model,
+                    module=module,
+                    hparams=config.hparams,
                     train_set=config.train_set,
                     test_set=config.test_set,
                 )
@@ -133,12 +150,14 @@ def dist_executor_fn(
     return wrapper_function
 
 
-def _register_with_servers(client, reporter, partition_id):
+def _register_with_servers(
+    client: Client, reporter: Reporter, partition_id: int
+) -> None:
     """Registers own address with server and starts heartbeat protocol.
-    Args:
-        client (Client): Client for communication with the server.
-        reporter (Reporter): Reporter responsible for heartbeat.
-        partition_id (int): Executors partition ID from Sparks RDD.
+
+    :param client: Client for communication with the server.
+    :param reporter: Reporter responsible for heartbeat.
+    :param partition_id: Executors partition ID from Sparks RDD.
     """
     client_addr = client.client_addr
     port = _get_open_port()
@@ -153,7 +172,11 @@ def _register_with_servers(client, reporter, partition_id):
     client.start_heartbeat(reporter)
 
 
-def _get_open_port():
+def _get_open_port() -> str:
+    """Lets the OS choose a free socket and attempts to bind it.
+
+    :returns: The port name.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("", 0))  # Bind to 0 lets OS choose a free socket.
     port = sock.getsockname()[1]
@@ -161,15 +184,14 @@ def _get_open_port():
     return port
 
 
-def _setup_logging(reporter, log_dir):
-    """Sets up logging directories and files, registers with tensorboard.
-    Args:
-        reporter (Reporter): Reporter responsible for logging.
-        log_dir (str): Log directory path on the file system.
-    Returns:
-        (tuple): Tuple containing:
-            tb_logdir (str): Path of the tensorboard directory.
-            trial_log_file (str): Path of the trial log file.
+def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple[str, str]:
+    """Sets up logging directories and files.
+
+    :param reporter: Reporter responsible for logging.
+    :param log_dir: Log directory path on the file system.
+
+    :returns: Tuple containing the path of the tensorboard directory
+        and the trial log file.
     """
     reporter.set_trial_id(0)
     tb_logdir = log_dir + "/" + "training_logs_" + str(reporter.partition_id)
@@ -181,26 +203,30 @@ def _setup_logging(reporter, log_dir):
     else:
         EnvSing.get_instance().mkdir(tb_logdir)
     reporter.init_logger(trial_log_file)
-    tensorboard._register(tb_logdir)
     return tb_logdir, trial_log_file
 
 
-def _setup_torch_env(torch_config):
+def _setup_torch_env(torch_config: dict) -> None:
     """Registers the Torch config as environment variables on the worker.
-    Args:
-        torch_config (dict): Dictionary containing the values of the variables.
+
+    :param torch_config: Dictionary containing the values of the variables.
     """
     for env_variable in torch_config.keys():
         os.environ[env_variable] = str(torch_config[env_variable])
 
 
-def _init_cluster(timeout=60, random_seed=0):
+def _init_cluster(
+    timeout: int = 60, random_seed: int = 0, backend: str = "ddp"
+) -> None:
     """Checks if config is set, initializes the Torch distributed cluster and sets random seeds.
-    Args:
-        timeout (:obj:'int', optional): Time until initialization times out. Defaults to 60.
-        random_seed (:obj:'int', optional): Random seed for Torch, numpy, random. Defaults to 0.
-    Raises:
-        AssertionError: Checks on environment variables or Torch distributed backend failed.
+
+    :param timeout: Time until initialization times out (default: ``60``).
+    :param random_seed: Random seed for Torch, numpy, random (default: ``0``).
+    :param backend: The backend that torch uses for distributed training. Either "ddp"
+        or "deepspeed" (default: ``ddp``).
+
+    :raises KeyError: Checks on environment variables failed.
+    :raises RuntimeError: Checks on PyTorch distributed backend failed.
     """
     for env_variable in [
         "MASTER_ADDR",
@@ -209,15 +235,83 @@ def _init_cluster(timeout=60, random_seed=0):
         "RANK",
         "NCCL_BLOCKING_WAIT",
     ]:
-        assert (
-            env_variable in os.environ
-        ), f"Environment variable {env_variable} not registered."
-    assert torch.cuda.is_available(), "Torch distributed needs a GPU cluster."
-    assert dist.is_available(), "Torch distributed backend not accessible."
-    assert dist.is_nccl_available(), "NCCL link not available on worker."
-    dist.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=timeout))
+        if env_variable not in os.environ:
+            raise KeyError(f"Environment variable {env_variable} not registered!")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Torch distributed needs a GPU cluster.")
+    if not dist.is_available():
+        raise RuntimeError("Torch distributed backend not accessible.")
+    if not dist.is_nccl_available():
+        raise RuntimeError("NCCL link not available on worker.")
+    if backend == "deepspeed":
+        deepspeed.init_process_group(timeout=datetime.timedelta(seconds=timeout))
+    else:
+        dist.init_process_group(
+            backend="nccl", timeout=datetime.timedelta(seconds=timeout)
+        )
     torch.manual_seed(random_seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     np.random.seed(random_seed)
     random.seed(random_seed)
+
+
+def _wrap_module(
+    config: DistributedConfig,
+) -> Union[
+    Type[MaggyDDPModuleWrapper],
+    Type[MaggyFairScaleModuleWrapper],
+    Type[MaggyDeepSpeedModuleWrapper],
+]:
+    """Wraps the module according to `backend`.
+
+    :param config: Experiment config.
+
+    :returns: Depending on the backend, returns a module that is either a PyTorch distributed
+        module, a fairscale fully sharded module or a deepspeed engine.
+    """
+    # Instantiate model on executor in case its too large for pickle and sent as a class.
+    _sanitize_init_model_params(config)
+    if config.backend == "ddp" and config.zero_lvl in [0, 1, 2]:
+        module = MaggyDDPModuleWrapper.config(config.module)
+    elif config.backend == "ddp":
+        module = MaggyFairScaleModuleWrapper.config(config.module)
+    elif config.backend == "deepspeed":
+        module = MaggyDeepSpeedModuleWrapper.config(config.module, config.ds_config)
+    return module
+
+
+def _sanitize_init_model_params(config: DistributedConfig) -> None:
+    assert inspect.isclass(
+        config.module
+    ), "Passed module should be a class, not an instance."
+    if config.backend == "ddp":
+        if config.ds_config:
+            print(
+                "Warning: DeepSpeed config passed for DDP backend. Config will be discarded."
+            )
+        if config.zero_lvl not in [0, 1, 2, 3]:
+            raise ValueError(
+                f"DeepSpeed level has to be in [0,1,2,3], is {config.zero_lvl}."
+            )
+        return
+    if config.backend == "deepspeed":
+        if not config.ds_config:
+            raise ValueError(
+                """DeepSpeed requires a configuration! For more information, see
+                              https://www.deepspeed.ai/getting-started/#deepspeed-configuration"""
+            )
+        if config.ds_config and config.zero_lvl != 0:
+            raise ValueError(
+                "Zero level not supported with DeepSpeed, use ds_config instead!"
+            )
+        return
+    raise ValueError(f"Unsupported backend {config.backend}.")
+
+
+def _monkey_patch_pytorch(zero_lvl):
+    # Patch DataLoader to always be distributed.
+    torch.utils.data.DataLoader = MaggyDataLoader
+    if zero_lvl > 0:
+        torch.optim.Adam = MaggyZeroAdam
+        torch.optim.SGD = MaggyZeroSGD
