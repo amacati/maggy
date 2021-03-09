@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from typing import Type, Union, Optional, Any
+import collections
 
 import torch
 from torch.utils.data import Dataset, Sampler
@@ -53,11 +54,12 @@ class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
         sampler: Optional[Sampler[int]] = None,
         batch_sampler: Optional[Any] = None,
         num_workers: int = 0,
-        collate_fn: Optional[Union["_collate_fn_t", "_petastorm_transform"]] = None,
+        collate_fn: Optional["_collate_fn_t"] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
         timeout: float = 0,
         worker_init_fn: Optional["_worker_init_fn_t"] = None,
+        transform_spec: Optional["TransformSpec"] = None,  # Petastorm option
         **_: Any,
     ):
         """Initializes either a torch DataLoader or a Petastorm DataLoader.
@@ -110,7 +112,7 @@ class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
                 dataset,
                 cur_shard=rank,
                 shard_count=num_workers,
-                transform_spec=TransformSpec(collate_fn),
+                transform_spec=TransformSpec(transform_spec),
             )
             PetastormDataLoader.__init__(self, reader, batch_size=batch_size)
             self.mode = "petastorm"
@@ -123,32 +125,30 @@ class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
 
     def __next__(self) -> Union[torch.Tensor, list, dict]:
         data = self.iterator.__next__()
-        return _to_cuda(data)
+        return self._to_cuda(data)
 
     def __len__(self):
         if self.mode == "petastorm":
             raise TypeError("Petastorm dataloader does not support __len__.")
         return super().__len__()
 
+    @classmethod
+    def _to_cuda(
+        cls, data: Union[torch.Tensor, list, dict]
+    ) -> Union[torch.Tensor, list, dict]:
+        """Recurses into data, transfers tensors to GPU.
 
-def _to_cuda(data: Union[torch.Tensor, list, dict]) -> Union[torch.Tensor, list, dict]:
-    """Recurses into data, transfers tensors to GPU.
+        :param data: The data structure to be transferred.
 
-    :param data: The data structure to be transferred.
+        :raises TypeError: In case of unsupported data structures.
 
-    :raises TypeError: In case of unsupported data structures.
-
-    :returns: The transfered data structure.
-    """
-    if isinstance(data, dict):
-        for key in data.keys():
-            data[key] = _to_cuda(data[key])
-        return data
-    if isinstance(data, list):
-        for idx, _ in enumerate(data):
-            temp = _to_cuda(data[idx])
-            data[idx] = temp
-        return data
-    if isinstance(data, torch.Tensor):
-        return data.cuda()
-    raise TypeError(f"Type {type(data)} currently not supported!")
+        :returns: The transfered data structure.
+        """
+        if isinstance(data, collections.abc.Mapping):
+            return {key: cls._to_cuda(val) for key, val in data.items()}
+        if isinstance(data, (list, tuple)):
+            data_list = [cls._to_cuda(el) for el in data]
+            return data_list if isinstance(data, list) else tuple(data_list)
+        if isinstance(data, torch.Tensor):
+            return data.cuda()
+        raise TypeError(f"Type {type(data)} currently not supported!")

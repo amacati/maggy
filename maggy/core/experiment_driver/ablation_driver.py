@@ -15,10 +15,10 @@
 #
 
 import json
-from maggy.experiment_config import AblationConfig
 from typing import Callable, Union, Optional, Type
 
 from maggy import util
+from maggy.experiment_config import AblationConfig
 from maggy.earlystop import NoStoppingRule
 from maggy.ablation.ablationstudy import AblationStudy
 from maggy.ablation.ablator.loco import LOCO

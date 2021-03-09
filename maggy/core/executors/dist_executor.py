@@ -21,27 +21,27 @@ import os
 import datetime
 import random
 import socket
-from types import SimpleNamespace
-from typing import Callable, Union, Any, Tuple
+from typing import Callable, Union, Any, Tuple, Type
 
 import torch
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as TorchDistributedDataParallel
 
 import numpy as np
 import deepspeed
-from deepspeed.runtime.engine import DeepSpeedEngine
-from fairscale.nn import FullyShardedDataParallel as FairscaleFullyShardedDataParallel
 
-from maggy import util, tensorboard
+from maggy import util
 from maggy.experiment_config import DistributedConfig
 from maggy.core.rpc import Client
 from maggy.core.reporter import Reporter
-from maggy.core.patching import MaggyDataLoader
+from maggy.core.patching import (
+    MaggyDataLoader,
+    MaggyZeroAdam,
+    MaggyZeroSGD,
+    MaggyDDPModuleWrapper,
+    MaggyFairScaleModuleWrapper,
+    MaggyDeepSpeedModuleWrapper,
+)
 from maggy.core.environment.singleton import EnvSing
-
-# Patch DataLoader to always be distributed.
-torch.utils.data.DataLoader = MaggyDataLoader
 
 
 def dist_executor_fn(
@@ -113,20 +113,25 @@ def dist_executor_fn(
 
             _setup_torch_env(torch_config)
             _init_cluster(timeout=60, random_seed=0)
-            model = _init_model(config)
+            module = _wrap_module(config)
+            _monkey_patch_pytorch(config.zero_lvl)
 
             reporter.log("Starting distributed training.", True)
             sig = inspect.signature(train_fn)
             if sig.parameters.get("reporter", None):
                 retval = train_fn(
-                    model=model,
+                    module=module,
+                    hparams=config.hparams,
                     train_set=config.train_set,
                     test_set=config.test_set,
                     reporter=reporter,
                 )
             else:
                 retval = train_fn(
-                    model=model, train_set=config.train_set, test_set=config.test_set,
+                    module=module,
+                    hparams=config.hparams,
+                    train_set=config.train_set,
+                    test_set=config.test_set,
                 )
 
             retval = util.handle_return_val(retval, tb_logdir, "Metric", trial_log_file)
@@ -180,7 +185,7 @@ def _get_open_port() -> str:
 
 
 def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple[str, str]:
-    """Sets up logging directories and files, registers with tensorboard.
+    """Sets up logging directories and files.
 
     :param reporter: Reporter responsible for logging.
     :param log_dir: Log directory path on the file system.
@@ -198,7 +203,6 @@ def _setup_logging(reporter: Reporter, log_dir: str) -> Tuple[str, str]:
     else:
         EnvSing.get_instance().mkdir(tb_logdir)
     reporter.init_logger(trial_log_file)
-    tensorboard._register(tb_logdir)
     return tb_logdir, trial_log_file
 
 
@@ -212,14 +216,14 @@ def _setup_torch_env(torch_config: dict) -> None:
 
 
 def _init_cluster(
-    timeout: int = 60, random_seed: int = 0, backend: int = "ddp"
+    timeout: int = 60, random_seed: int = 0, backend: str = "ddp"
 ) -> None:
     """Checks if config is set, initializes the Torch distributed cluster and sets random seeds.
 
     :param timeout: Time until initialization times out (default: ``60``).
     :param random_seed: Random seed for Torch, numpy, random (default: ``0``).
-    :param backend: The backend that torch uses for distributed training. Either "ddp",
-        "fairscale" or "deepspeed" (default: ``ddp``).
+    :param backend: The backend that torch uses for distributed training. Either "ddp"
+        or "deepspeed" (default: ``ddp``).
 
     :raises KeyError: Checks on environment variables failed.
     :raises RuntimeError: Checks on PyTorch distributed backend failed.
@@ -252,42 +256,62 @@ def _init_cluster(
     random.seed(random_seed)
 
 
-def _init_model(
+def _wrap_module(
     config: DistributedConfig,
 ) -> Union[
-    TorchDistributedDataParallel, FairscaleFullyShardedDataParallel, DeepSpeedEngine
+    Type[MaggyDDPModuleWrapper],
+    Type[MaggyFairScaleModuleWrapper],
+    Type[MaggyDeepSpeedModuleWrapper],
 ]:
-    """Initializes the correct model according to `backend`.
-
-    If the model is too large to be pickled, it's passed as a class instead and is instantiated
-    here. The model gets further wrapped according to the backend's requirements.
+    """Wraps the module according to `backend`.
 
     :param config: Experiment config.
 
-    :returns: Depending on the backend, returns a model that is either a PyTorch distributed
+    :returns: Depending on the backend, returns a module that is either a PyTorch distributed
         module, a fairscale fully sharded module or a deepspeed engine.
     """
     # Instantiate model on executor in case its too large for pickle and sent as a class.
-    if inspect.isclass(config.model):
-        config.model = config.model()
-    if config.backend == "ddp":
-        model = TorchDistributedDataParallel(config.model.cuda())
-    elif config.backend == "fairscale":
-        model = FairscaleFullyShardedDataParallel(config.model.cuda())
+    _sanitize_init_model_params(config)
+    if config.backend == "ddp" and config.zero_lvl in [0, 1, 2]:
+        module = MaggyDDPModuleWrapper.config(config.module)
+    elif config.backend == "ddp":
+        module = MaggyFairScaleModuleWrapper.config(config.module)
     elif config.backend == "deepspeed":
-        ds_args = SimpleNamespace(local_rank=0)
-        ds_config = {
-            "train_micro_batch_size_per_gpu": 64,
-            "gradient_accumulation_steps": 1,
-            "optimizer": {"type": "Adam", "params": {"lr": 0.00015}},
-            "fp16": {"enabled": True},
-            "zero_optimization": {"stage": 2},
-        }
-        model = config.model
-        model, *_ = deepspeed.initialize(
-            args=ds_args,
-            model=model,
-            model_parameters=model.parameters(),
-            config_params=ds_config,
-        )
-    return model
+        module = MaggyDeepSpeedModuleWrapper.config(config.module, config.ds_config)
+    return module
+
+
+def _sanitize_init_model_params(config: DistributedConfig) -> None:
+    assert inspect.isclass(
+        config.module
+    ), "Passed module should be a class, not an instance."
+    if config.backend == "ddp":
+        if config.ds_config:
+            print(
+                "Warning: DeepSpeed config passed for DDP backend. Config will be discarded."
+            )
+        if config.zero_lvl not in [0, 1, 2, 3]:
+            raise ValueError(
+                f"DeepSpeed level has to be in [0,1,2,3], is {config.zero_lvl}."
+            )
+        return
+    if config.backend == "deepspeed":
+        if not config.ds_config:
+            raise ValueError(
+                """DeepSpeed requires a configuration! For more information, see
+                              https://www.deepspeed.ai/getting-started/#deepspeed-configuration"""
+            )
+        if config.ds_config and config.zero_lvl != 0:
+            raise ValueError(
+                "Zero level not supported with DeepSpeed, use ds_config instead!"
+            )
+        return
+    raise ValueError(f"Unsupported backend {config.backend}.")
+
+
+def _monkey_patch_pytorch(zero_lvl):
+    # Patch DataLoader to always be distributed.
+    torch.utils.data.DataLoader = MaggyDataLoader
+    if zero_lvl > 0:
+        torch.optim.Adam = MaggyZeroAdam
+        torch.optim.SGD = MaggyZeroSGD

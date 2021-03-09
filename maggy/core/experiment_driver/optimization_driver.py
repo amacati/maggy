@@ -96,7 +96,7 @@ class OptimizationDriver(Driver):
             self.direction = config.direction.lower()
         else:
             raise ValueError(
-                "The experiment's direction should be an string (either 'min' or 'max') "
+                "The experiment's direction should be a string (either 'min' or 'max') "
                 "but it is {0} (of type '{1}').".format(
                     str(config.direction), type(config.direction).__name__
                 )
@@ -193,9 +193,7 @@ class OptimizationDriver(Driver):
         ):
             self.message_callbacks[key] = call
 
-    # "N/A" type because abstractoptimizer defines it, but makes no use of it.
-    # TODO: Remove trial from get_suggestion()?
-    def controller_get_next(self, trial: Optional["N/A"] = None) -> Union[Trial, None]:
+    def controller_get_next(self, trial: Optional[Trial] = None) -> Union[Trial, None]:
         """Gets a `Trial` to be assigned to an executor, or `None` if there are
         no trials remaining in the experiment.
 
