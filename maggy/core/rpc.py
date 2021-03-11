@@ -440,6 +440,7 @@ class DistributedServer(Server):
             ("LOG", self._log_callback),
             ("QUERY", self._query_callback),
             ("FINAL", self._final_callback),
+            ("BARRIER", self._barrier_callback),
         ]
         self.message_callbacks = self._register_callbacks()
 
@@ -589,13 +590,20 @@ class Client(MessageSocket):
     def start_heartbeat(self, reporter):
         def _heartbeat(self, reporter):
             while not self.done:
+                backoff = True  # Allow to tolerate HB failure on shutdown (once)
                 with reporter.lock:
                     metric, step, logs = reporter.get_data()
                     data = {"value": metric, "step": step}
-
-                    resp = self._request(
-                        self.hb_sock, "METRIC", data, reporter.get_trial_id(), logs
-                    )
+                    try:
+                        resp = self._request(
+                            self.hb_sock, "METRIC", data, reporter.get_trial_id(), logs
+                        )
+                    except OSError as err:  # TODO: Verify that this is necessary
+                        if backoff:
+                            backoff = False
+                            time.sleep(5)
+                            continue
+                        raise OSError from err
                     self._handle_message(resp, reporter)
                 time.sleep(self.hb_interval)
 

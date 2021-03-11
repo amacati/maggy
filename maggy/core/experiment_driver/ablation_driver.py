@@ -25,8 +25,8 @@ from maggy.ablation.ablator.loco import LOCO
 from maggy.ablation.ablator import AbstractAblator
 from maggy.trial import Trial
 from maggy.core.rpc import OptimizationServer
-from maggy.core.experiment_driver import OptimizationDriver
-from maggy.core.executors import trial_executor_fn
+from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
+from maggy.core.executors.trial_executor import trial_executor_fn
 
 
 class AblationDriver(OptimizationDriver):

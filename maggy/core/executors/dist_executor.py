@@ -91,14 +91,12 @@ def dist_executor_fn(
         try:
             _register_with_servers(client, reporter, partition_id)
             tb_logdir, trial_log_file = _setup_logging(reporter, log_dir)
-            reporter.log("Awaiting worker reservations.", True)
+            reporter.log("Awaiting worker reservations.")
             client.await_reservations()
-            reporter.log("Reservations complete, configuring PyTorch.", True)
+            reporter.log("Reservations complete, configuring PyTorch.")
             master_config = client.get_torch_config()
             if not master_config:
-                reporter.log(
-                    "PyTorch registration failed, exiting from all tasks.", True
-                )
+                reporter.log("PyTorch registration failed, exiting from all tasks.")
                 return
             addr, port = master_config["host_port"].split(":")
             torch_config = {
@@ -107,7 +105,8 @@ def dist_executor_fn(
                 "WORLD_SIZE": str(master_config["num_executors"]),
                 "RANK": str(partition_id),
                 "LOCAL_RANK": str(0),  # DeepSpeed requires local rank.
-                "NCCL_BLOCKING_WAIT": "1",
+                "NCCL_ASYNC_ERROR_HANDLING ": "1",  # "NCCL_BLOCKING_WAIT": "1",
+                "NCCL_DEBUG": "INFO",
             }
             reporter.log(f"Torch config is {torch_config}")
 
@@ -116,7 +115,7 @@ def dist_executor_fn(
             module = _wrap_module(config)
             _monkey_patch_pytorch(config.zero_lvl)
 
-            reporter.log("Starting distributed training.", True)
+            reporter.log("Starting distributed training.")
             sig = inspect.signature(train_fn)
             if sig.parameters.get("reporter", None):
                 retval = train_fn(
@@ -135,12 +134,11 @@ def dist_executor_fn(
                 )
 
             retval = util.handle_return_val(retval, tb_logdir, "Metric", trial_log_file)
-
-            reporter.log("Finished distributed training.", True)
-            reporter.log("Final metric: {}".format(retval), True)
+            dist.barrier()  # Don't exit until all executors are done (else NCCL crashes)
+            reporter.log("Finished distributed training.")
             client.finalize_metric(retval, reporter)
         except:  # noqa: E722
-            reporter.log(traceback.format_exc(), False)
+            reporter.log(traceback.format_exc())
             raise
         finally:
             reporter.close_logger()
@@ -233,7 +231,7 @@ def _init_cluster(
         "MASTER_PORT",
         "WORLD_SIZE",
         "RANK",
-        "NCCL_BLOCKING_WAIT",
+        "NCCL_ASYNC_ERROR_HANDLING",  # "NCCL_BLOCKING_WAIT",
     ]:
         if env_variable not in os.environ:
             raise KeyError(f"Environment variable {env_variable} not registered!")
@@ -282,9 +280,10 @@ def _wrap_module(
 
 
 def _sanitize_init_model_params(config: DistributedConfig) -> None:
-    assert inspect.isclass(
+    assert isinstance(config.module, type) or callable(
         config.module
-    ), "Passed module should be a class, not an instance."
+    ), """Passed module should be a
+        class, not an instance."""
     if config.backend == "ddp":
         if config.ds_config:
             print(
@@ -309,7 +308,7 @@ def _sanitize_init_model_params(config: DistributedConfig) -> None:
     raise ValueError(f"Unsupported backend {config.backend}.")
 
 
-def _monkey_patch_pytorch(zero_lvl):
+def _monkey_patch_pytorch(zero_lvl: int) -> None:
     # Patch DataLoader to always be distributed.
     torch.utils.data.DataLoader = MaggyDataLoader
     if zero_lvl > 0:

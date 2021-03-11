@@ -16,7 +16,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace, Type
+from types import SimpleNamespace
+from typing import Type
 
 from torch.nn import Module as TorchModule
 from torch.nn.parallel import DistributedDataParallel as TorchDistributedDataParallel
