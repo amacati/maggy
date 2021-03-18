@@ -21,7 +21,7 @@ import threading
 import secrets
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Callable, Tuple, Type
+from typing import Callable, Tuple
 
 
 from maggy import util
@@ -46,7 +46,7 @@ class Driver(ABC):
 
     SECRET_BYTES = 8
 
-    def __init__(self, config: Type[LagomConfig], app_id: int, run_id: int):
+    def __init__(self, config: LagomConfig, app_id: int, run_id: int):
         """Sets up the RPC server, message queue and logs.
 
         :param config: Experiment config.
@@ -102,7 +102,8 @@ class Driver(ABC):
         :param train_fn: User provided training function that should be
             parallelized.
 
-        :returns: A dictionary of the experiment's results."""
+        :returns: A dictionary of the experiment's results.
+        """
         job_start = time.time()
         try:
             self._exp_startup_callback()
@@ -155,7 +156,7 @@ class Driver(ABC):
         """
 
     @abstractmethod
-    def _exp_exception_callback(self, exc: Type[Exception]):
+    def _exp_exception_callback(self, exc: Exception):
         """Callback for experiment drivers to implement their own experiment
         error handling logic.
 

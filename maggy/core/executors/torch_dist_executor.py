@@ -30,23 +30,37 @@ import numpy as np
 import deepspeed
 
 from maggy import util
-from maggy.experiment_config import DistributedConfig
+from maggy.experiment_config import TorchDistributedConfig
 from maggy.core.rpc import Client
 from maggy.core.reporter import Reporter
+from maggy.core.patching import MaggyDataLoader
 from maggy.core.patching import (
-    MaggyDataLoader,
-    MaggyZeroAdam,
-    MaggyZeroSGD,
     MaggyDDPModuleWrapper,
     MaggyFairScaleModuleWrapper,
     MaggyDeepSpeedModuleWrapper,
 )
 from maggy.core.environment.singleton import EnvSing
 
+_torch_version = torch.__version__.split(".")  # Check compatibility with 1.8
+if int(_torch_version[0]) > 1 or int(_torch_version[1]) >= 8:
+    from maggy.core.patching import (
+        MaggyZeroAdadelta,
+        MaggyZeroAdagrad,
+        MaggyZeroAdam,
+        MaggyZeroAdamW,
+        MaggyZeroSparseAdam,
+        MaggyZeroAdamax,
+        MaggyZeroASGD,
+        MaggyZeroLBFGS,
+        MaggyZeroRMSprop,
+        MaggyZeroRprop,
+        MaggyZeroSGD,
+    )
 
-def dist_executor_fn(
+
+def torch_dist_executor_fn(
     train_fn: Callable,
-    config: DistributedConfig,
+    config: TorchDistributedConfig,
     app_id: int,
     run_id: int,
     server_addr: str,
@@ -79,8 +93,8 @@ def dist_executor_fn(
         client = Client(server_addr, partition_id, 0, hb_interval, secret)
         log_file = log_dir + "/executor_" + str(partition_id) + ".log"
 
-        reporter = Reporter(log_file, partition_id, 0, __builtin__.print)
         builtin_print = __builtin__.print
+        reporter = Reporter(log_file, partition_id, 0, builtin_print)
 
         def maggy_print(*args, **kwargs):
             builtin_print(*args, **kwargs)
@@ -91,12 +105,14 @@ def dist_executor_fn(
         try:
             _register_with_servers(client, reporter, partition_id)
             tb_logdir, trial_log_file = _setup_logging(reporter, log_dir)
-            reporter.log("Awaiting worker reservations.")
+            reporter.log("Awaiting worker reservations.", True)
             client.await_reservations()
-            reporter.log("Reservations complete, configuring PyTorch.")
-            master_config = client.get_torch_config()
+            reporter.log("Reservations complete, configuring PyTorch.", True)
+            master_config = client.get_exec_config()[0]
             if not master_config:
-                reporter.log("PyTorch registration failed, exiting from all tasks.")
+                reporter.log(
+                    "PyTorch registration failed, exiting from all tasks.", True
+                )
                 return
             addr, port = master_config["host_port"].split(":")
             torch_config = {
@@ -105,17 +121,19 @@ def dist_executor_fn(
                 "WORLD_SIZE": str(master_config["num_executors"]),
                 "RANK": str(partition_id),
                 "LOCAL_RANK": str(0),  # DeepSpeed requires local rank.
-                "NCCL_ASYNC_ERROR_HANDLING ": "1",  # "NCCL_BLOCKING_WAIT": "1",
+                "NCCL_BLOCKING_WAIT": "1",
                 "NCCL_DEBUG": "INFO",
+                "NCCL_IB_DISABLE": "1",
             }
-            reporter.log(f"Torch config is {torch_config}")
+            reporter.log(f"Torch config is {torch_config}", True)
 
             _setup_torch_env(torch_config)
+            _sanitize_config(config)
             _init_cluster(timeout=60, random_seed=0)
             module = _wrap_module(config)
             _monkey_patch_pytorch(config.zero_lvl)
 
-            reporter.log("Starting distributed training.")
+            reporter.log("Starting distributed training.", True)
             sig = inspect.signature(train_fn)
             if sig.parameters.get("reporter", None):
                 retval = train_fn(
@@ -135,7 +153,7 @@ def dist_executor_fn(
 
             retval = util.handle_return_val(retval, tb_logdir, "Metric", trial_log_file)
             dist.barrier()  # Don't exit until all executors are done (else NCCL crashes)
-            reporter.log("Finished distributed training.")
+            reporter.log("Finished distributed training.", True)
             client.finalize_metric(retval, reporter)
         except:  # noqa: E722
             reporter.log(traceback.format_exc())
@@ -231,7 +249,7 @@ def _init_cluster(
         "MASTER_PORT",
         "WORLD_SIZE",
         "RANK",
-        "NCCL_ASYNC_ERROR_HANDLING",  # "NCCL_BLOCKING_WAIT",
+        "NCCL_BLOCKING_WAIT",  # NCCL_BLOCKING_WAIT ,NCCL_ASYNC_ERROR_HANDLING
     ]:
         if env_variable not in os.environ:
             raise KeyError(f"Environment variable {env_variable} not registered!")
@@ -255,7 +273,7 @@ def _init_cluster(
 
 
 def _wrap_module(
-    config: DistributedConfig,
+    config: TorchDistributedConfig,
 ) -> Union[
     Type[MaggyDDPModuleWrapper],
     Type[MaggyFairScaleModuleWrapper],
@@ -265,21 +283,19 @@ def _wrap_module(
 
     :param config: Experiment config.
 
-    :returns: Depending on the backend, returns a module that is either a PyTorch distributed
-        module, a fairscale fully sharded module or a deepspeed engine.
+    :returns: Depending on the backend, returns a module that is a Maggy wrapper of either a PyTorch
+        distributed module, a fairscale fully sharded module or a deepspeed engine.
     """
-    # Instantiate model on executor in case its too large for pickle and sent as a class.
-    _sanitize_init_model_params(config)
     if config.backend == "ddp" and config.zero_lvl in [0, 1, 2]:
         module = MaggyDDPModuleWrapper.config(config.module)
     elif config.backend == "ddp":
-        module = MaggyFairScaleModuleWrapper.config(config.module)
+        module = MaggyFairScaleModuleWrapper.config(config.module, config.ddp3_mp)
     elif config.backend == "deepspeed":
         module = MaggyDeepSpeedModuleWrapper.config(config.module, config.ds_config)
     return module
 
 
-def _sanitize_init_model_params(config: DistributedConfig) -> None:
+def _sanitize_config(config: TorchDistributedConfig) -> None:
     assert isinstance(config.module, type) or callable(
         config.module
     ), """Passed module should be a
@@ -295,22 +311,42 @@ def _sanitize_init_model_params(config: DistributedConfig) -> None:
             )
         return
     if config.backend == "deepspeed":
-        if not config.ds_config:
-            raise ValueError(
-                """DeepSpeed requires a configuration! For more information, see
-                              https://www.deepspeed.ai/getting-started/#deepspeed-configuration"""
-            )
-        if config.ds_config and config.zero_lvl != 0:
-            raise ValueError(
-                "Zero level not supported with DeepSpeed, use ds_config instead!"
-            )
+        _sanitize_ds_config(config)
         return
     raise ValueError(f"Unsupported backend {config.backend}.")
+
+
+def _sanitize_ds_config(config: TorchDistributedConfig) -> None:
+    if not config.ds_config:
+        raise ValueError(
+            """DeepSpeed ZeRO requires a configuration! For more information, see
+            https://www.deepspeed.ai/docs/config-json/"""
+        )
+    if config.zero_lvl in [1, 2, 3]:
+        print("Warning: Seperate ZeRO level set. Overwriting the config.")
+        config.ds_config["zero_optimization"]["stage"] = config.zero_lvl
+        config.zero_lvl = 0  # Avoid monkey patching after overwrite.
+    elif config.zero_lvl != 0:
+        raise ValueError("ZeRO level out of range! Zero accepts levels from 0 to 3")
+    if config.ds_config["optimizer"]["type"] != "Adam":
+        raise ValueError("ZeRO currently only supported with Adam optimizer.")
+    # Currently Ninja JIT fails on Spark workers, so we force PyTorch optimizer in order to not
+    # trigger the build of DeepSpeed ops. This should be resolved in future versions.
+    config.ds_config["optimizer"]["params"]["torch_adam"] = True
 
 
 def _monkey_patch_pytorch(zero_lvl: int) -> None:
     # Patch DataLoader to always be distributed.
     torch.utils.data.DataLoader = MaggyDataLoader
     if zero_lvl > 0:
+        torch.optim.Adadelta = MaggyZeroAdadelta
+        torch.optim.Adagrad = MaggyZeroAdagrad
         torch.optim.Adam = MaggyZeroAdam
+        torch.optim.AdamW = MaggyZeroAdamW
+        torch.optim.SparseAdam = MaggyZeroSparseAdam
+        torch.optim.Adamax = MaggyZeroAdamax
+        torch.optim.ASGD = MaggyZeroASGD
+        torch.optim.LBFGS = MaggyZeroLBFGS
+        torch.optim.RMSprop = MaggyZeroRMSprop
+        torch.optim.Rprop = MaggyZeroRprop
         torch.optim.SGD = MaggyZeroSGD

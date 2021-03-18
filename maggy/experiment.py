@@ -26,7 +26,7 @@ provided information.
 import atexit
 import time
 from functools import singledispatch
-from typing import Callable, Type
+from typing import Callable
 
 from maggy import util
 from maggy.core.environment.singleton import EnvSing
@@ -34,7 +34,12 @@ from maggy.experiment_config import (
     LagomConfig,
     OptimizationConfig,
     AblationConfig,
-    DistributedConfig,
+    TorchDistributedConfig,
+)
+from maggy.core.experiment_driver import (
+    OptimizationDriver,
+    AblationDriver,
+    DistributedTrainingDriver,
 )
 
 
@@ -44,7 +49,7 @@ RUN_ID = 1
 EXPERIMENT_JSON = {}
 
 
-def lagom(train_fn: Callable, config: Type[LagomConfig]) -> dict:
+def lagom(train_fn: Callable, config: LagomConfig) -> dict:
     """Launches a maggy experiment, which depending on 'config' can either
     be a hyperparameter optimization, an ablation study experiment or distributed
     training. Given a search space, objective and a model training procedure `train_fn`
@@ -94,39 +99,26 @@ def lagom_driver(config, app_id: int, run_id: int) -> None:
     raise TypeError(
         "Invalid config type! Config is expected to be of type {}, {} or {}, \
                      but is of type {}".format(
-            OptimizationConfig, AblationConfig, DistributedConfig, type(config)
+            OptimizationConfig, AblationConfig, TorchDistributedConfig, type(config)
         )
     )
 
 
 @lagom_driver.register(OptimizationConfig)
-# Lazy import of OptimizationDriver to avoid TF import until necessary
-def _(
-    config: OptimizationConfig, app_id: int, run_id: int
-) -> "OptimizationDriver":  # noqa: F821
-    from maggy.core.experiment_driver.optimization_driver import OptimizationDriver
-
+def _(config: OptimizationConfig, app_id: int, run_id: int) -> OptimizationDriver:
     return OptimizationDriver(config, app_id, run_id)
 
 
 @lagom_driver.register(AblationConfig)
-# Lazy import of AblationDriver to avoid TF import until necessary
-def _(
-    config: AblationConfig, app_id: int, run_id: int
-) -> "AblationDriver":  # noqa: F821
-    from maggy.core.experiment_driver.ablation_driver import AblationDriver
-
+def _(config: AblationConfig, app_id: int, run_id: int) -> AblationDriver:
     return AblationDriver(config, app_id, run_id)
 
 
-@lagom_driver.register(DistributedConfig)
-# Lazy import of DistributedDriver to avoid PyTorch import until necessary
+@lagom_driver.register(TorchDistributedConfig)
 def _(
-    config: DistributedConfig, app_id: int, run_id: int
-) -> "DistributedDriver":  # noqa: F821
-    from maggy.core.experiment_driver.distributed_driver import DistributedDriver
-
-    return DistributedDriver(config, app_id, run_id)
+    config: TorchDistributedConfig, app_id: int, run_id: int
+) -> DistributedTrainingDriver:
+    return DistributedTrainingDriver(config, app_id, run_id)
 
 
 def _exception_handler(duration: int) -> None:

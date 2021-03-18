@@ -17,7 +17,7 @@
 import os
 import time
 import json
-from typing import Type, Callable, Optional, Union
+from typing import Callable, Optional, Union
 
 from maggy import util, tensorboard
 from maggy.searchspace import Searchspace
@@ -145,7 +145,7 @@ class OptimizationDriver(Driver):
         print("Finished experiment.")
         return result
 
-    def _exp_exception_callback(self, exc: Type[Exception]) -> None:
+    def _exp_exception_callback(self, exc: Exception) -> None:
         """Closes logs, raises the driver exception if existent, else reraises
         unhandled exception.
 
@@ -422,7 +422,8 @@ class OptimizationDriver(Driver):
         """Heartbeart message callback.
 
         Checks if the experiment is underperforming and can trigger an early
-        stop abort.
+        stop abort. Also copies logs from the server to the driver logs for
+        later display in sparkmagic.
 
         :param msg: The metric message from the message queue.
         """
@@ -597,8 +598,8 @@ class OptimizationDriver(Driver):
 
     @staticmethod
     def _init_controller(
-        optimizer: Union[str, Type[AbstractOptimizer]], searchspace: Searchspace
-    ) -> Type[AbstractOptimizer]:
+        optimizer: Union[str, AbstractOptimizer], searchspace: Searchspace
+    ) -> AbstractOptimizer:
         """Checks for a valid optimizer config.
 
         :param optimizer: The optimizer to be checked.
@@ -641,9 +642,7 @@ class OptimizationDriver(Driver):
             )
 
     @staticmethod
-    def _init_earlystop_check(
-        es_policy: Union[str, Type[AbstractEarlyStop]]
-    ) -> Callable:
+    def _init_earlystop_check(es_policy: Union[str, AbstractEarlyStop]) -> Callable:
         """Checks for a valid early stop policy.
 
         :param es_policy: The early stop policy to be checked.

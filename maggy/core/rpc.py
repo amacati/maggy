@@ -23,7 +23,7 @@ import struct
 import threading
 import time
 import typing
-from typing import Type, Any
+from typing import Any
 
 from pyspark import cloudpickle
 
@@ -322,9 +322,7 @@ class OptimizationServer(Server):
         ]
         self.message_callbacks = self._register_callbacks()
 
-    def _register_callback(
-        self, resp: dict, msg: dict, exp_driver: Type[Driver]
-    ) -> None:
+    def _register_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Register message callback.
 
         Checks if the executor was registered before and reassignes lost trial,
@@ -356,7 +354,7 @@ class OptimizationServer(Server):
         resp["type"] = "QUERY"
         resp["data"] = self.reservations.done()
 
-    def _metric_callback(self, resp: dict, msg: dict, exp_driver: Type[Driver]) -> None:
+    def _metric_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Metric message callback.
 
         Determines if a trial should be stopped or not.
@@ -372,7 +370,7 @@ class OptimizationServer(Server):
             flag = exp_driver.get_trial(msg["trial_id"]).get_early_stop()
             resp["type"] = "STOP" if flag else "OK"
 
-    def _final_callback(self, resp: dict, msg: dict, exp_driver: Type[Driver]) -> None:
+    def _final_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Final message callback.
 
         Resets the reservation to avoid sending the trial again.
@@ -382,7 +380,7 @@ class OptimizationServer(Server):
         # add metric msg to the exp driver queue
         exp_driver.add_message(msg)
 
-    def _get_callback(self, resp: dict, msg: dict, exp_driver: Type[Driver]) -> None:
+    def _get_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         # lookup reservation to find assigned trial
         trial_id = self.reservations.get_assigned_trial(msg["partition_id"])
         # trial_id needs to be none because experiment_done can be true but
@@ -399,7 +397,7 @@ class OptimizationServer(Server):
         else:
             resp["data"] = None
 
-    def _log_callback(self, resp: dict, _: Any, exp_driver: Type[Driver]) -> None:
+    def _log_callback(self, resp: dict, _: Any, exp_driver: Driver) -> None:
         """Log message callback.
 
         Copies logs from the driver and returns them.
@@ -423,7 +421,7 @@ class OptimizationServer(Server):
         return self.reservations.get_assigned_trial(partition_id)
 
 
-class DistributedServer(Server):
+class DistributedTrainingServer(Server):
     """Implements the server for distributed training."""
 
     def __init__(self, num_executors: int):
@@ -436,17 +434,14 @@ class DistributedServer(Server):
         self.callback_list = [
             ("REG", self._register_callback),
             ("METRIC", self._metric_callback),
-            ("TORCH_CONFIG", self._torch_callback),
+            ("EXEC_CONFIG", self._exec_config_callback),
             ("LOG", self._log_callback),
             ("QUERY", self._query_callback),
             ("FINAL", self._final_callback),
-            ("BARRIER", self._barrier_callback),
         ]
         self.message_callbacks = self._register_callbacks()
 
-    def _register_callback(
-        self, resp: dict, msg: dict, exp_driver: Type[Driver]
-    ) -> None:
+    def _register_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Register message callback.
 
         Saves workers connection metadata for initialization of distributed
@@ -456,20 +451,18 @@ class DistributedServer(Server):
         exp_driver.add_message(msg)
         resp["type"] = "OK"
 
-    def _torch_callback(self, resp: dict, *_: Any) -> None:
-        """Torch message callback.
+    def _exec_config_callback(self, resp: dict, *_: Any) -> None:
+        """Executor config message callback.
 
-        Returns the connection info of the Spark worker with partition ID 1 if
-        available.
+        Returns the connection info of all Spark executors registered.
         """
         try:
-            # Get the config of worker with partition 1.
-            resp["data"] = self.reservations.get()[0]
+            resp["data"] = self.reservations.get()
         except KeyError:
             resp["data"] = None
         resp["type"] = "OK"
 
-    def _log_callback(self, resp: dict, _: Any, exp_driver: Type[Driver]) -> None:
+    def _log_callback(self, resp: dict, _: Any, exp_driver: Driver) -> None:
         """Log message callback.
 
         Copies logs from the driver and returns them.
@@ -482,11 +475,12 @@ class DistributedServer(Server):
         resp["stopped"] = False
         resp["metric"] = "N/A"
 
-    def _metric_callback(self, resp: dict, *_: Any) -> None:
+    def _metric_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Metric message callback.
 
-        Confirms heartbeat messages from the clients.
+        Confirms heartbeat messages from the clients and adds logs to the driver.
         """
+        exp_driver.add_message(msg)
         resp["type"] = "OK"
 
     def _query_callback(self, resp: dict, *_: Any) -> None:
@@ -497,7 +491,7 @@ class DistributedServer(Server):
         resp["type"] = "QUERY"
         resp["data"] = self.reservations.done()
 
-    def _final_callback(self, resp: dict, msg: dict, exp_driver: Type[Driver]) -> None:
+    def _final_callback(self, resp: dict, msg: dict, exp_driver: Driver) -> None:
         """Final message callback.
 
         Adds final results to the message queue.
@@ -621,11 +615,11 @@ class Client(MessageSocket):
             time.sleep(1)
         return trial_id, parameters
 
-    def get_torch_config(self, timeout=60):
+    def get_exec_config(self, timeout=60):
         config = None
         start_time = time.time()
         while not config and time.time() - start_time < timeout:
-            config = self._request(self.sock, "TORCH_CONFIG").get("data", None)
+            config = self._request(self.sock, "EXEC_CONFIG").get("data", None)
         return config
 
     def stop(self):

@@ -15,7 +15,7 @@
 #
 
 import json
-from typing import Callable, Union, Optional, Type
+from typing import Callable, Union, Optional
 
 from maggy import util
 from maggy.experiment_config import AblationConfig
@@ -113,7 +113,7 @@ class AblationDriver(OptimizationDriver):
         print("Finished experiment.")
         return result
 
-    def _exp_exception_callback(self, exc: Type[Exception]) -> None:
+    def _exp_exception_callback(self, exc: Exception) -> None:
         """Raises the driver exception if existent, else reraises unhandled
         exception.
         """

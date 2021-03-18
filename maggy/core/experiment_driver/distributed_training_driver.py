@@ -18,28 +18,28 @@ from pickle import PicklingError
 from typing import Callable, Type, Any
 
 from maggy import util
-from maggy.experiment_config import DistributedConfig
-from maggy.core.rpc import DistributedServer
+from maggy.experiment_config import TorchDistributedConfig
+from maggy.core.rpc import DistributedTrainingServer
 from maggy.core.experiment_driver.driver import Driver
-from maggy.core.executors.dist_executor import dist_executor_fn
+from maggy.core.executors.torch_dist_executor import torch_dist_executor_fn
 
 
-class DistributedDriver(Driver):
-    """Driver for distributed learning with PyTorch on a Spark cluster.
+class DistributedTrainingDriver(Driver):
+    """Driver for distributed learning on a Spark cluster.
 
     Registers the workers on an RPC server, ensures proper configuration and
     logging, and accumulates final results.
     """
 
-    def __init__(self, config: DistributedConfig, app_id: int, run_id: int):
-        """Initializes the server, but does not start it yet.
+    def __init__(self, config: TorchDistributedConfig, app_id: int, run_id: int):
+        """Initializes the server for initial training setup communication and log collection.
 
         :param config: Experiment config.
         :param app_id: Maggy application ID.
         :param run_id: Maggy run ID.
         """
         super().__init__(config, app_id, run_id)
-        self.server = DistributedServer(self.num_executors)
+        self.server = DistributedTrainingServer(self.num_executors)
         self.results = []
 
     def _exp_startup_callback(self) -> None:
@@ -86,9 +86,9 @@ class DistributedDriver(Driver):
 
         :param train_fn: User provided training function.
 
-        :returns: The monkey patched training function."""
-
-        return dist_executor_fn(
+        :returns: The monkey patched training function.
+        """
+        return torch_dist_executor_fn(
             train_fn,
             self.config,
             self.app_id,

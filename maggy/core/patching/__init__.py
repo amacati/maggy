@@ -14,8 +14,9 @@
 #   limitations under the License.
 #
 
+import torch
+
 from .dataloader import MaggyDataLoader
-from .optim import MaggyZeroAdam, MaggyZeroSGD
 from .modules import (
     MaggyDDPModuleWrapper,
     MaggyFairScaleModuleWrapper,
@@ -23,10 +24,39 @@ from .modules import (
 )
 
 __all__ = [
-    "MaggyDataLoader",
-    "MaggyZeroAdam",
-    "MaggyZeroSGD",
     "MaggyDDPModuleWrapper",
     "MaggyFairScaleModuleWrapper",
     "MaggyDeepSpeedModuleWrapper",
 ]
+
+# Check torch version, only import ZeroRedundancyOptimizer if >= 1.8
+_torch_version = torch.__version__.split(".")
+if int(_torch_version[0]) > 1 or int(_torch_version[1]) >= 8:
+    from .optim import (
+        MaggyZeroAdadelta,
+        MaggyZeroAdagrad,
+        MaggyZeroAdam,
+        MaggyZeroAdamW,
+        MaggyZeroSparseAdam,
+        MaggyZeroAdamax,
+        MaggyZeroASGD,
+        MaggyZeroLBFGS,
+        MaggyZeroRMSprop,
+        MaggyZeroRprop,
+        MaggyZeroSGD,
+    )
+
+    __all__ += [
+        "MaggyDataLoader",
+        "MaggyZeroAdadelta",
+        "MaggyZeroAdagrad",
+        "MaggyZeroAdam",
+        "MaggyZeroAdamW",
+        "MaggyZeroSparseAdam",
+        "MaggyZeroAdamax",
+        "MaggyZeroASGD",
+        "MaggyZeroLBFGS",
+        "MaggyZeroRMSprop",
+        "MaggyZeroRprop",
+        "MaggyZeroSGD",
+    ]

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import os
-from typing import Type, Union, Optional, Any
+from typing import Type, Union, Optional, Any, Callable
 import collections
 
 import torch
@@ -54,12 +54,12 @@ class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
         sampler: Optional[Sampler[int]] = None,
         batch_sampler: Optional[Any] = None,
         num_workers: int = 0,
-        collate_fn: Optional["_collate_fn_t"] = None,
+        collate_fn: Optional[Callable] = None,
         pin_memory: bool = False,
         drop_last: bool = False,
         timeout: float = 0,
-        worker_init_fn: Optional["_worker_init_fn_t"] = None,
-        transform_spec: Optional["TransformSpec"] = None,  # Petastorm option
+        worker_init_fn: Optional[Callable] = None,
+        transform_spec: Optional[TransformSpec] = None,  # Petastorm option
         **_: Any,
     ):
         """Initializes either a torch DataLoader or a Petastorm DataLoader.
@@ -90,7 +90,7 @@ class MaggyDataLoader(TorchDataLoader, PetastormDataLoader):
                 shuffle=False,
                 sampler=sampler,
                 batch_sampler=None,
-                num_workers=num_workers,
+                num_workers=0,  # Multiprocessing workers do not work at the moment.
                 collate_fn=collate_fn,
                 pin_memory=pin_memory,
                 drop_last=drop_last,
