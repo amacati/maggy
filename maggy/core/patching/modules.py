@@ -55,7 +55,7 @@ class MaggyDDPModuleWrapper(TorchDistributedDataParallel):
 
     @classmethod
     def config(cls, module: Type[TorchModule]) -> Type[MaggyDDPModuleWrapper]:
-        """Sets the wrapper module class property and returns the modified class type.
+        """Sets the wrapper module class property.
 
         :param module: The PyTorch module that is to be wrapped.
 
@@ -96,8 +96,7 @@ class MaggyFairScaleModuleWrapper(FairscaleFullyShardedDataParallel):
     def config(
         cls, module: Type[TorchModule], mixed_precision: bool
     ) -> Type[MaggyFairScaleModuleWrapper]:
-        """Sets the wrapper module class and mixed_precision properties and returns the modified
-        class type.
+        """Sets the wrapper module class and mixed_precision properties.
 
         :param module: The PyTorch module that is to be wrapped.
         :param mixed_precision: Determines if mixed precision is used for the model's parameters
@@ -147,8 +146,7 @@ class MaggyDeepSpeedModuleWrapper(DeepSpeedEngine):
     def config(
         cls, module: Type[TorchModule], config_params: dict
     ) -> Type[MaggyDeepSpeedModuleWrapper]:
-        """Sets the wrapper module class and config parameters properties and returns the modified
-        class type.
+        """Sets the wrapper module class and config parameters properties.
 
         :param module: The PyTorch module that is to be wrapped.
         :param config_params: Configuration dictionary for the DeepSpeedEngine.
